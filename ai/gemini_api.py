@@ -1,53 +1,69 @@
-# ai/gemini_api.py
 import os
 from dotenv import load_dotenv
 from google import genai
+from google.genai import types
 
-# Load the hidden API key from the .env file
+# Load the hidden API key
 load_dotenv()
 API_KEY = os.getenv("GEMINI_API_KEY")
 
+client = None
+if API_KEY:
+    client = genai.Client(api_key=API_KEY)
+
+# This holds the ongoing chat memory for the Copilot Sidebar
+copilot_chat = None
+
 def analyze_and_fix_code(broken_code):
-    """
-    Sends code to Gemini API using the NEW SDK, asks it to act as an IDE auto-fixer, 
-    and returns the clean, corrected code.
-    """
-    if not API_KEY:
+    """Used for the Auto-Fix button."""
+    if not client:
         return "# Error: API key missing. Please set GEMINI_API_KEY in your .env file.\n" + broken_code
 
     try:
-        # Initialize the new client
-        client = genai.Client(api_key=API_KEY)
-        
-        # The hidden prompt that guides the AI's behavior
         prompt = f"""
         You are an expert code auto-fixer integrated into an IDE.
-        Analyze the following code. Identify the language, find any bugs, syntax errors, or bad indentation, and fix them.
-        
-        IMPORTANT RULES:
-        1. Return ONLY the corrected code. 
-        2. Do NOT use markdown code blocks (e.g., do not wrap in ```python ... ```).
-        3. Do NOT provide explanations or conversational text. Just the raw code.
-        
+        Analyze the following code. Identify the language, find any bugs, and fix them.
+        IMPORTANT RULES: Return ONLY the corrected code. No markdown. No explanations.
         Code to fix:
         {broken_code}
         """
-        
-        # Call the new API
         response = client.models.generate_content(
             model='gemini-2.5-flash',
             contents=prompt,
         )
-        
         fixed_code = response.text.strip()
         
-        # Safety check: Strip markdown if the AI accidentally includes it anyway
+        # Safety check to strip markdown
         if fixed_code.startswith("```") and fixed_code.endswith("```"):
             lines = fixed_code.split('\n')
             fixed_code = '\n'.join(lines[1:-1])
             
         return fixed_code
-
     except Exception as e:
-        # If the internet is down or the API fails, return the original code with an error comment
         return f"# AI Error: {str(e)}\n\n" + broken_code
+
+def ask_copilot(prompt, current_code=""):
+    """Used for the Copilot Chat Sidebar."""
+    global copilot_chat
+    if not client:
+        return "Error: API key missing."
+    
+    # Initialize the chat session if it doesn't exist yet
+    if copilot_chat is None:
+        copilot_chat = client.chats.create(
+            model='gemini-2.5-flash',
+            config=types.GenerateContentConfig(
+                system_instruction="You are an expert AI Copilot integrated directly into the user's IDE. Be concise, helpful, and friendly. Provide code snippets directly when needed."
+            )
+        )
+        
+    full_prompt = prompt
+    # Automatically attach the user's current code so the AI has context!
+    if current_code.strip():
+        full_prompt += f"\n\n[FOR YOUR CONTEXT: Here is the code currently in my editor:]\n```\n{current_code}\n```"
+        
+    try:
+        response = copilot_chat.send_message(full_prompt)
+        return response.text.strip()
+    except Exception as e:
+        return f"Copilot Error: {str(e)}"
